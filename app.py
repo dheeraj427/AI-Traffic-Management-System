@@ -23,7 +23,7 @@ st.set_page_config(page_title="Smart Traffic Management", layout="wide", initial
 # 🛑 PERFECT TELEGRAM CREDENTIALS 🛑
 # ==========================================
 BOT_TOKEN = "8632106244:AAGCpuuxuQlbhxSDUMwE2diWCswU97_iiGE".strip()
-CHAT_ID = "6600568532".strip()
+CHAT_ID = "-1003817415359".strip()
 
 # ---------------- DATABASE INIT ----------------
 def init_db():
@@ -397,7 +397,9 @@ with st.sidebar:
 # ==========================================
 if app_mode == "Live AI Feed":
     
-    camera_url = st.text_input("Camera URL (DroidCam) or 0 for webcam", "http://192.168.1.6:4747/video")
+    # 🛑 THE IP ADDRESS HAS BEEN UPDATED RIGHT HERE:
+    camera_url = st.text_input("Camera URL (DroidCam) or 0 for webcam", "http://10.154.221.57:4747/video")
+    
     col1,col2 = st.columns(2)
 
     if col1.button("Start Camera"): st.session_state.running = True
@@ -431,7 +433,9 @@ if app_mode == "Live AI Feed":
     if st.session_state.running:
 
         if "cap" not in st.session_state:
-            st.session_state.cap = cv2.VideoCapture(0 if camera_url=="0" else camera_url)
+            # FIX: Properly parse digit inputs in case you switch to standard webcam indexes (0, 1, 2)
+            cam_src = int(camera_url) if camera_url.isdigit() else camera_url
+            st.session_state.cap = cv2.VideoCapture(cam_src)
 
         while st.session_state.running:
             ret,frame = st.session_state.cap.read()
@@ -440,7 +444,10 @@ if app_mode == "Live AI Feed":
                 st.warning("Camera disconnected, reconnecting...")
                 st.session_state.cap.release()
                 time.sleep(1)
-                st.session_state.cap = cv2.VideoCapture(0 if camera_url=="0" else camera_url)
+                
+                # Re-check the URL in case it was modified
+                cam_src = int(camera_url) if camera_url.isdigit() else camera_url
+                st.session_state.cap = cv2.VideoCapture(cam_src)
                 continue
 
             frame=cv2.resize(frame,(320,320))
@@ -481,7 +488,6 @@ if app_mode == "Live AI Feed":
                 env_indicator.empty()
 
             # ---------------- AI FRAME CACHING (SPEED FIX) ----------------
-            # FIX: Run YOLO on the very first frame to populate memory!
             if frame_counter % 3 == 1:
                 with torch.no_grad(): results=model(frame)
                 df=results.pandas().xyxy[0]
