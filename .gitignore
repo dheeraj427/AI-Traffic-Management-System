@@ -1,0 +1,17 @@
+# Secrets (Block in any folder)
+**/.streamlit/
+**/.env
+
+# Heavy AI & Media Files
+*.pt
+*.mp4
+*.mp3
+*.jpg
+runs/
+
+# Database
+*.db
+
+# Python Cache
+**/__pycache__/
+*.pyc

@@ -1,0 +1,539 @@
+import streamlit as st
+import cv2
+import torch
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.linear_model import LinearRegression
+import time
+import threading
+from gtts import gTTS
+from playsound import playsound
+import os
+
+st.set_page_config(page_title="Smart Traffic Management", layout="wide")
+st.title("🚦 Smart AI Traffic Management System")
+
+# ---------------- GLOBAL UI STYLES ----------------
+
+st.markdown("""
+<style>
+body {
+    background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+}
+
+/* Glass Card */
+.glass-card {
+    background: rgba(255,255,255,0.08);
+    backdrop-filter: blur(12px);
+    border-radius: 15px;
+    padding: 15px;
+    border: 1px solid rgba(255,255,255,0.2);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+}
+
+/* Glow Hover */
+.glow-box {
+    transition: 0.3s;
+    border-radius: 12px;
+}
+.glow-box:hover {
+    box-shadow: 0 0 20px rgba(0, 200, 255, 0.7);
+    transform: scale(1.02);
+}
+
+/* Fade */
+.fade-in {
+    animation: fadeIn 0.6s ease-in;
+}
+@keyframes fadeIn {
+    from {opacity:0; transform: translateY(10px);}
+    to {opacity:1; transform: translateY(0);}
+}
+
+/* Pulse */
+.pulse {
+    animation: pulse 1.5s infinite;
+}
+@keyframes pulse {
+    0% { box-shadow: 0 0 5px green; }
+    50% { box-shadow: 0 0 25px lime; }
+    100% { box-shadow: 0 0 5px green; }
+}
+
+/* Shine */
+.shine {
+    position: relative;
+    overflow: hidden;
+}
+.shine::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -75%;
+    width: 50%;
+    height: 100%;
+    background: rgba(255,255,255,0.2);
+    transform: skewX(-25deg);
+}
+.shine:hover::before {
+    animation: shine 0.8s;
+}
+@keyframes shine {
+    100% { left: 125%; }
+}
+
+/* LOADER */
+.centered-loader {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+}
+.big-spinner {
+    width: 120px;
+    height: 120px;
+    border: 12px solid #f3f3f3;
+    border-top: 12px solid #00c6ff;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin: auto;
+}
+@keyframes spin {
+    0% { transform: rotate(0deg);}
+    100% { transform: rotate(360deg);}
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------- LOADER ----------------
+
+loading_placeholder = st.empty()
+
+loading_placeholder.markdown("""
+<div class="centered-loader">
+    <div class="big-spinner"></div>
+    <h3 style="color:white;">Initializing AI Traffic System...</h3>
+</div>
+""", unsafe_allow_html=True)
+
+# ---------------- SETTINGS ----------------
+
+BASE_GREEN = 60
+MIN_GREEN = 10
+MAX_GREEN = 120
+LANES = ["Lane 1","Lane 2","Lane 3","Lane 4"]
+LANE_NAMES = {"Lane 1": "North", "Lane 2": "South", "Lane 3": "East", "Lane 4": "West"}
+
+# ---------------- SESSION STATE ----------------
+
+if "running" not in st.session_state:
+    st.session_state.running = False
+
+if "traffic_history" not in st.session_state:
+    st.session_state.traffic_history = []
+
+if "lane_durations" not in st.session_state:
+    st.session_state.lane_durations = {lane:BASE_GREEN for lane in LANES}
+
+if "lane_index" not in st.session_state:
+    st.session_state.lane_index = 0
+
+if "signal_end_time" not in st.session_state:
+    st.session_state.signal_end_time = 0
+
+if "cycle_schedule" not in st.session_state:
+    st.session_state.cycle_schedule = []
+
+if "last_announced_lane" not in st.session_state:
+    st.session_state.last_announced_lane = None
+
+if "last_beep_second" not in st.session_state:
+    st.session_state.last_beep_second = -1
+
+if "last_countdown_voice" not in st.session_state:
+    st.session_state.last_countdown_voice = -1
+
+if "last_alert" not in st.session_state:
+    st.session_state.last_alert = ""
+
+# ---------------- AUDIO FUNCTIONS (THREADED) ----------------
+
+def speak_worker(text):
+    try:
+        filename = f"voice_{int(time.time() * 1000)}.mp3"
+        tts = gTTS(text=text, lang='en')
+        tts.save(filename)
+        playsound(filename)
+        if os.path.exists(filename):
+            os.remove(filename)
+    except Exception:
+        pass
+
+def speak(text):
+    threading.Thread(target=speak_worker, args=(text,), daemon=True).start()
+
+def play_beep_worker():
+    try:
+        print('\a')
+    except Exception:
+        pass
+
+def play_beep():
+    threading.Thread(target=play_beep_worker, daemon=True).start()
+
+def announce_signal(lane, duration):
+    friendly_name = LANE_NAMES.get(lane, lane)
+    text = f"Signal update. {friendly_name} lane is now green for {duration} seconds."
+    speak(text)
+
+# ---------------- LOAD YOLO ----------------
+
+@st.cache_resource
+def load_model():
+    model = torch.hub.load("ultralytics/yolov5","yolov5s",pretrained=True)
+    model.eval()
+    return model
+
+model = load_model()
+
+# REMOVE LOADER AFTER MODEL LOAD
+loading_placeholder.empty()
+
+vehicle_classes = ["car","truck","bus","motorcycle"]
+
+# ---------------- CAMERA INPUT ----------------
+
+camera_url = st.text_input(
+    "Camera URL (DroidCam) or 0 for webcam",
+    "http://192.168.1.6:4747/video"
+)
+
+col1,col2 = st.columns(2)
+
+if col1.button("Start Camera"):
+    st.session_state.running = True
+
+if col2.button("Stop Camera"):
+    st.session_state.running = False
+
+# ---------------- TRAFFIC STATUS ----------------
+
+def traffic_status(total):
+    if total <=3:
+        return "LOW","Normal signal timing"
+    elif total <=6:
+        return "MODERATE","Monitor traffic"
+    elif total <=10:
+        return "HEAVY","Extend green signal"
+    else:
+        return "CRITICAL","Traffic intervention needed"
+
+# ---------------- SIGNAL CALCULATION ----------------
+
+def calculate_lane_times(lane_counts):
+    base_cycle = BASE_GREEN * 4
+    total_cars = sum(lane_counts.values())
+    durations = {}
+
+    if total_cars == 0:
+        even = base_cycle // 4
+        for lane in LANES:
+            durations[lane] = min(even,MAX_GREEN)
+        return durations
+
+    weights = {lane:count/total_cars for lane,count in lane_counts.items()}
+
+    for lane in LANES:
+        t = int(base_cycle * weights[lane])
+        t = max(MIN_GREEN, min(MAX_GREEN, t))
+        durations[lane] = t
+
+    return durations
+
+# ---------------- BUILD SIGNAL SCHEDULE ----------------
+
+def build_cycle_schedule(durations,start_time):
+    schedule=[]
+    current=start_time
+    for lane in LANES:
+        end=current+durations[lane]
+        schedule.append({"lane":lane,"start":current,"end":end})
+        current=end
+    return schedule
+
+# ---------------- GRAPH ----------------
+
+def traffic_graph(lane_counts):
+    lanes=list(lane_counts.keys())
+    counts=list(lane_counts.values())
+    fig,ax=plt.subplots()
+    ax.bar(lanes,counts)
+    ax.set_title("Traffic Density")
+    return fig
+
+# ---------------- TRAFFIC LIGHTS ----------------
+
+def traffic_lights_with_timers(current_time,schedule):
+
+    cols=st.columns(4)
+    lane_wait={}
+
+    for item in schedule:
+        lane=item["lane"]
+        if item["start"]<=current_time<item["end"]:
+            lane_wait[lane]=int(item["end"]-current_time)
+        else:
+            if current_time < item["start"]:
+                lane_wait[lane]=int(item["start"]-current_time)
+            else:
+                lane_wait[lane]=0
+
+    active_lane=None
+    for item in schedule:
+        if item["start"]<=current_time<item["end"]:
+            active_lane=item["lane"]
+            break
+
+    for lane,col in zip(LANES,cols):
+        with col:
+
+            wrapper_class = "pulse" if lane == active_lane else ""
+
+            if lane==active_lane:
+
+                st.markdown(f"""
+                <div class="glass-card glow-box fade-in {wrapper_class}">
+                <h4 style="text-align:center">{LANE_NAMES.get(lane, lane)}</h4>
+                <div style="width:40px;height:40px;background:red;border-radius:50%;margin:auto"></div>
+                <div style="width:40px;height:40px;background:gray;border-radius:50%;margin:auto"></div>
+                <div style="width:40px;height:40px;background:green;border-radius:50%;margin:auto"></div>
+                <p style="color:lime;text-align:center;font-size:20px;">{lane_wait[lane]}s</p>
+                </div>
+                """,unsafe_allow_html=True)
+
+            else:
+
+                st.markdown(f"""
+                <div class="glass-card glow-box fade-in shine">
+                <h4 style="text-align:center">{LANE_NAMES.get(lane, lane)}</h4>
+                <div style="width:40px;height:40px;background:red;border-radius:50%;margin:auto"></div>
+                <div style="width:40px;height:40px;background:gray;border-radius:50%;margin:auto"></div>
+                <div style="width:40px;height:40px;background:gray;border-radius:50%;margin:auto"></div>
+                <p style="color:red;text-align:center;font-size:20px;">{lane_wait[lane]}s</p>
+                </div>
+                """,unsafe_allow_html=True)
+
+# ---------------- LANE BREAKDOWN UI ----------------
+
+def lane_breakdown_ui(lane_counts, active_lane=None):
+    st.subheader("Lane-wise Vehicle Breakdown")
+
+    col1, col2 = st.columns(2)
+    col3, col4 = st.columns(2)
+
+    lanes = list(lane_counts.keys())
+
+    def split(count):
+        return {
+            "car": int(count*0.4),
+            "bike": int(count*0.3),
+            "bus": int(count*0.2),
+            "truck": int(count*0.1)
+        }
+
+    def render_card(title, count, is_active=False):
+        data = split(count)
+        status = "🟢 ACTIVE" if is_active else "🔴 STOPPED"
+        wrapper_class = "pulse" if is_active else ""
+
+        st.markdown(f"""
+        <div class="glass-card glow-box fade-in {wrapper_class}" style="background:#0f172a; margin:10px; border-radius:15px; border:1px solid rgba(255,255,255,0.2);">
+            <h4 style="color:white; margin-bottom: 10px;">{title} - <span style="font-size: 16px;">{status}</span></h4>
+            <p style="color: #aaa; font-size: 18px;">🚗 {data['car']} | 🏍️ {data['bike']} | 🚌 {data['bus']} | 🚚 {data['truck']}</p>
+        </div>
+        """,unsafe_allow_html=True)
+
+    with col1:
+        render_card("NORTH", lane_counts[lanes[0]], is_active=(lanes[0] == active_lane))
+    with col2:
+        render_card("SOUTH", lane_counts[lanes[1]], is_active=(lanes[1] == active_lane))
+    with col3:
+        render_card("EAST", lane_counts[lanes[2]], is_active=(lanes[2] == active_lane))
+    with col4:
+        render_card("WEST", lane_counts[lanes[3]], is_active=(lanes[3] == active_lane))
+
+# ---------------- TRAFFIC PREDICTION ----------------
+
+def predict_traffic(history):
+    if len(history)<5:
+        return history[-1]
+    X=np.arange(len(history)).reshape(-1,1)
+    y=np.array(history)
+    model_lr=LinearRegression()
+    model_lr.fit(X,y)
+    future=np.array([[len(history)+1]])
+    return int(model_lr.predict(future)[0])
+
+# ---------------- PLACEHOLDERS ----------------
+
+video_placeholder=st.empty()
+graph_placeholder=st.empty()
+lights_placeholder=st.empty()
+status_panel=st.empty()
+lane_placeholder=st.empty()
+history_placeholder=st.empty()
+metric_placeholder=st.empty()
+
+frame_counter=0
+
+lane_counts={"Lane 1":0,"Lane 2":0,"Lane 3":0,"Lane 4":0}
+
+# ---------------- MAIN LOOP ----------------
+
+if st.session_state.running:
+
+    cap=cv2.VideoCapture(0 if camera_url=="0" else camera_url)
+
+    while st.session_state.running:
+
+        ret,frame=cap.read()
+
+        if not ret:
+            st.warning("Camera disconnected, reconnecting...")
+            cap.release()
+            time.sleep(1)
+            cap=cv2.VideoCapture(0 if camera_url=="0" else camera_url)
+            continue
+
+        frame=cv2.resize(frame,(320,320))
+        frame_counter+=1
+
+        if frame_counter%6!=0:
+            video_placeholder.image(frame,channels="BGR")
+            continue
+
+        with torch.no_grad():
+            results=model(frame)
+
+        df=results.pandas().xyxy[0]
+        df=df[df["confidence"]>0.35]
+        detections=df[df["name"].isin(vehicle_classes)]
+
+        annotated=results.render()[0]
+        video_placeholder.image(annotated,channels="BGR")
+
+        h,w,_=frame.shape
+
+        lanes_region={
+        "Lane 1":(0,0,w//2,h//2),
+        "Lane 2":(w//2,0,w,h//2),
+        "Lane 3":(0,h//2,w//2,h),
+        "Lane 4":(w//2,h//2,w,h)
+        }
+
+        for k in lane_counts:
+            lane_counts[k]=0
+
+        for _,det in detections.iterrows():
+            cx=(int(det.xmin)+int(det.xmax))//2
+            cy=(int(det.ymin)+int(det.ymax))//2
+
+            for lane,(lx1,ly1,lx2,ly2) in lanes_region.items():
+                if lx1<=cx<=lx2 and ly1<=cy<=ly2:
+                    lane_counts[lane]+=1
+
+        current_time=time.time()
+
+        # ---------------- ACTIVE LANE & TIMERS ----------------
+        active_lane = None
+        remaining_time = 0
+
+        for item in st.session_state.cycle_schedule:
+            if item["start"] <= current_time < item["end"]:
+                active_lane = item["lane"]
+                remaining_time = int(item["end"] - current_time)
+                break
+
+        # ---------------- VOICE ASSISTANT LOGIC ----------------
+        if remaining_time <= 5 and remaining_time > 0:
+            if st.session_state.last_countdown_voice != remaining_time:
+                speak(str(remaining_time))
+                st.session_state.last_countdown_voice = remaining_time
+                
+            if st.session_state.last_beep_second != remaining_time:
+                play_beep()
+                st.session_state.last_beep_second = remaining_time
+
+        if current_time>=st.session_state.signal_end_time:
+
+            st.session_state.lane_durations=calculate_lane_times(lane_counts)
+
+            st.session_state.cycle_schedule=build_cycle_schedule(
+                st.session_state.lane_durations,
+                current_time
+            )
+
+            st.session_state.signal_end_time=st.session_state.cycle_schedule[-1]["end"]
+
+            # Announce the new active lane
+            first_lane = st.session_state.cycle_schedule[0]["lane"]
+            duration = st.session_state.lane_durations[first_lane]
+
+            if st.session_state.last_announced_lane != first_lane:
+                announce_signal(first_lane, duration)
+                st.session_state.last_announced_lane = first_lane
+
+            st.session_state.last_beep_second = -1
+            st.session_state.last_countdown_voice = -1
+
+        # ---------------- UI UPDATES ----------------
+        
+        graph_placeholder.pyplot(traffic_graph(lane_counts),clear_figure=True)
+
+        with lights_placeholder.container():
+            traffic_lights_with_timers(current_time,st.session_state.cycle_schedule)
+
+        total=sum(lane_counts.values())
+        level,action=traffic_status(total)
+
+        if level == "CRITICAL" and st.session_state.last_alert != "CRITICAL":
+            speak("Warning. Traffic congestion is critical.")
+            st.session_state.last_alert = "CRITICAL"
+        elif level != "CRITICAL":
+            st.session_state.last_alert = ""
+
+        with status_panel.container():
+            st.markdown('<div class="glass-card glow-box fade-in">', unsafe_allow_html=True)
+            st.subheader("Traffic Status")
+            col1,col2=st.columns(2)
+            col1.metric("Total Vehicles",total)
+            col2.metric("Congestion",level)
+            st.info(action)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with lane_placeholder.container():
+            st.markdown('<div class="glass-card glow-box fade-in">', unsafe_allow_html=True)
+            lane_breakdown_ui(lane_counts, active_lane)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        st.session_state.traffic_history.append(sum(lane_counts.values()))
+
+        if len(st.session_state.traffic_history)>50:
+            st.session_state.traffic_history.pop(0)
+
+        df=pd.DataFrame({
+        "Frame":range(len(st.session_state.traffic_history)),
+        "Vehicles":st.session_state.traffic_history
+        })
+
+        history_placeholder.subheader("Traffic Flow History")
+        history_placeholder.line_chart(df.set_index("Frame"))
+
+        predicted=predict_traffic(st.session_state.traffic_history)
+        metric_placeholder.metric("Predicted Vehicles Next Interval",predicted)
+
+        time.sleep(0.08)
+
+    cap.release()
