@@ -8,7 +8,6 @@ from sklearn.linear_model import LinearRegression
 import time
 import threading
 from gtts import gTTS
-from playsound import playsound
 import os
 from collections import OrderedDict
 import datetime
