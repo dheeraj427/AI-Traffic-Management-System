@@ -12,3 +12,4 @@ matplotlib
 pyyaml
 requests
 gTTS
+scikit-learn
