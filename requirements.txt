@@ -1,7 +1,7 @@
 streamlit
 torch
 torchvision
-opencv-python
+opencv-python-headless
 pillow
 numpy
 ultralytics
@@ -11,3 +11,5 @@ pandas
 matplotlib
 pyyaml
 requests
+gTTS
+playsound
