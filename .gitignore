@@ -2,9 +2,8 @@
 **/.streamlit/
 **/.env
 
-# Heavy AI & Media Files
+# Heavy AI & Media Files (Allowing traffic.mp4 for cloud video feed)
 *.pt
-*.mp4
 *.mp3
 *.jpg
 runs/
