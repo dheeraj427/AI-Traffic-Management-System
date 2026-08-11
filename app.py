@@ -5,6 +5,7 @@ import gc
 import os
 import random
 import sqlite3
+import threading
 import time
 
 import cv2
@@ -17,38 +18,16 @@ from sklearn.linear_model import LinearRegression
 import streamlit as st
 import torch
 
-# ---------------- PAGE CONFIG & STYLES ----------------
 st.set_page_config(
     page_title="Smart Traffic Management",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.markdown(
-    """
-<style>
-body { background: linear-gradient(135deg, #0f2027, #203a43, #2c5364); }
-.glass-card {
-    background: rgba(255,255,255,0.08); backdrop-filter: blur(12px); border-radius: 15px; padding: 15px;
-    border: 1px solid rgba(255,255,255,0.2); box-shadow: 0 8px 32px rgba(0,0,0,0.3); transition: all 0.4s ease-in-out;
-}
-.glow-box { transition: 0.3s; border-radius: 12px; }
-.glow-box:hover { box-shadow: 0 0 20px rgba(0, 200, 255, 0.7); transform: scale(1.02); }
-.pulse { animation: pulse 1.5s infinite; }
-@keyframes pulse { 0% { box-shadow: 0 0 5px green; } 50% { box-shadow: 0 0 25px lime; } 100% { box-shadow: 0 0 5px green; } }
-.emergency-flash { animation: alert-flash 0.6s infinite; border: 3px solid red; box-shadow: 0 0 30px red; }
-@keyframes alert-flash { 0% { background: rgba(255,0,0,0.1); } 50% { background: rgba(255,0,0,0.4); } 100% { background: rgba(255,0,0,0.1); } }
-.loader-wrapper { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 50vh; }
-.astra-spinner { width: 100px; height: 100px; border-radius: 50%; border: 6px solid rgba(0, 198, 255, 0.1); border-top-color: #00c6ff; border-bottom-color: lime; animation: spin 1.5s cubic-bezier(0.68, -0.55, 0.265, 1.55) infinite; box-shadow: 0 0 25px rgba(0, 198, 255, 0.4); }
-@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-.loader-text { color: #00c6ff; margin-top: 25px; font-family: monospace; font-size: 18px; letter-spacing: 2px; text-transform: uppercase; animation: pulse-text 1.5s infinite; }
-@keyframes pulse-text { 0% { opacity: 0.5; } 50% { opacity: 1; text-shadow: 0 0 10px #00c6ff; } 100% { opacity: 0.5; } }
-</style>
-""",
-    unsafe_allow_html=True,
-)
-
-# ---------------- SECRETS ----------------
+# ==========================================
+# 🛑 PERFECT TELEGRAM CREDENTIALS 🛑
+# ==========================================
+# Read secrets securely from .streamlit/secrets.toml
 BOT_TOKEN = st.secrets["BOT_TOKEN"]
 CHAT_ID = st.secrets["CHAT_ID"]
 
@@ -146,6 +125,31 @@ class CentroidTracker:
     return self.objects
 
 
+# ---------------- GLOBAL UI & ANIMATIONS ----------------
+st.markdown(
+    """
+<style>
+body { background: linear-gradient(135deg, #0f2027, #203a43, #2c5364); }
+.glass-card {
+    background: rgba(255,255,255,0.08); backdrop-filter: blur(12px); border-radius: 15px; padding: 15px;
+    border: 1px solid rgba(255,255,255,0.2); box-shadow: 0 8px 32px rgba(0,0,0,0.3); transition: all 0.4s ease-in-out;
+}
+.glow-box { transition: 0.3s; border-radius: 12px; }
+.glow-box:hover { box-shadow: 0 0 20px rgba(0, 200, 255, 0.7); transform: scale(1.02); }
+.pulse { animation: pulse 1.5s infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 5px green; } 50% { box-shadow: 0 0 25px lime; } 100% { box-shadow: 0 0 5px green; } }
+.emergency-flash { animation: alert-flash 0.6s infinite; border: 3px solid red; box-shadow: 0 0 30px red; }
+@keyframes alert-flash { 0% { background: rgba(255,0,0,0.1); } 50% { background: rgba(255,0,0,0.4); } 100% { background: rgba(255,0,0,0.1); } }
+.loader-wrapper { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 50vh; }
+.astra-spinner { width: 100px; height: 100px; border-radius: 50%; border: 6px solid rgba(0, 198, 255, 0.1); border-top-color: #00c6ff; border-bottom-color: lime; animation: spin 1.5s cubic-bezier(0.68, -0.55, 0.265, 1.55) infinite; box-shadow: 0 0 25px rgba(0, 198, 255, 0.4); }
+@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+.loader-text { color: #00c6ff; margin-top: 25px; font-family: monospace; font-size: 18px; letter-spacing: 2px; text-transform: uppercase; animation: pulse-text 1.5s infinite; }
+@keyframes pulse-text { 0% { opacity: 0.5; } 50% { opacity: 1; text-shadow: 0 0 10px #00c6ff; } 100% { opacity: 0.5; } }
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
 # ---------------- HEADER ----------------
 header_col1, header_col2 = st.columns([4, 1])
 with header_col1:
@@ -230,9 +234,9 @@ if "smoothed_lane_counts" not in st.session_state:
 st.session_state.audio_enabled = audio_enabled
 
 
-# ---------------- CLOUD-SAFE BROWSER AUDIO ----------------
+# ---------------- CLOUD-SAFE AUDIO FUNCTIONS ----------------
 def speak(text):
-  """Cloud-safe browser-streaming text-to-speech for Streamlit Cloud."""
+  """Cloud-safe text-to-speech that streams audio directly to the browser."""
   if "audio_enabled" in st.session_state and not st.session_state.audio_enabled:
     return
   try:
@@ -254,7 +258,7 @@ def speak(text):
         """
     st.markdown(audio_html, unsafe_allow_html=True)
   except Exception as e:
-    print(f"Voice audio error: {e}")
+    print(f"Audio playback error: {e}")
 
 
 def announce_signal(lane, duration):
@@ -289,13 +293,37 @@ if st.session_state.audio_enabled:
   add_bgm()
 
 
-# ---------------- LOAD CUDA/CPU YOLO ----------------
+# ---------------- SIREN SIMULATION THREAD ----------------
+def simulate_siren():
+  while True:
+    if not st.session_state.get("run_siren_sim", False):
+      st.session_state.siren_active = False
+    if (
+        st.session_state.get("run_siren_sim", False)
+        and st.session_state.running
+    ):
+      if random.random() < 0.05:
+        st.session_state.siren_trigger_event = True
+        time.sleep(12)
+    time.sleep(3)
+
+
+# Only spawn thread when camera is actively running
+if (
+    st.session_state.get("running", False)
+    and "siren_thread" not in st.session_state
+):
+  threading.Thread(target=simulate_siren, daemon=True).start()
+  st.session_state.siren_thread = True
+
+
+# ---------------- LOAD CUDA / CPU YOLO ----------------
 @st.cache_resource
 def load_model():
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-  model = torch.hub.load("ultralytics/yolov5", "yolov5s", pretrained=True).to(
-      device
-  )
+  model = torch.hub.load(
+      "ultralytics/yolov5", "yolov5s", pretrained=True, trust_repo=True
+  ).to(device)
   if torch.cuda.is_available():
     model.half()
   model.eval()
@@ -371,6 +399,17 @@ def build_cycle_schedule(durations, start_time):
     schedule.append({"lane": lane, "start": current, "end": end})
     current = end
   return schedule
+
+
+def predict_traffic(history):
+  if len(history) < 5:
+    return history[-1] if history else 0
+  X = np.arange(len(history)).reshape(-1, 1)
+  y = np.array(history)
+  model_lr = LinearRegression()
+  model_lr.fit(X, y)
+  future = np.array([[len(history) + 1]])
+  return int(max(0, model_lr.predict(future)[0]))
 
 
 # ---------------- UI DASHBOARD COMPONENTS ----------------
@@ -498,6 +537,7 @@ with st.sidebar:
     st.header("⚙️ AI Core Controls")
     st.caption("⚠️ Enable toggles BEFORE starting camera.")
 
+    # ---------------- AMBULANCE DEMO TOGGLE ----------------
     st.markdown("---")
     ambulance_demo = st.toggle("🚑 Ambulance Auto-Routing", value=False)
     st.caption(
@@ -505,6 +545,7 @@ with st.sidebar:
         " while halting others)*"
     )
 
+    # ---------------- ALERTS MUTE TOGGLE ----------------
     st.markdown("---")
     st.session_state.alerts_enabled = st.toggle(
         "🔕 Enable Telegram Alerts", value=False
@@ -1094,16 +1135,27 @@ if app_mode == "Live AI Feed":
               st.session_state.detailed_counts, st.session_state.active_lane
           )
 
+# ==========================================
+# 🛑 PAGE 2: DATA ANALYTICS 🛑
+# ==========================================
 elif app_mode == "Data Analytics":
-  st.title("📊 Data Analytics & Logs")
+  st.title("📊 Data Analytics & System Logs")
   conn = st.session_state.db_conn
-  c = conn.cursor()
 
-  st.subheader("🚨 Intersection Violations")
+  st.subheader("🚨 Intersection Violations Log")
   df_violations = pd.read_sql_query(
-      "SELECT * FROM violations ORDER BY timestamp DESC LIMIT 50", conn
+      "SELECT * FROM violations ORDER BY timestamp DESC LIMIT 100", conn
   )
   if not df_violations.empty:
     st.dataframe(df_violations, use_container_width=True)
   else:
-    st.info("No violations recorded yet.")
+    st.info("No traffic violations or anomalies recorded yet.")
+
+  st.subheader("📈 Traffic Density Log")
+  df_traffic = pd.read_sql_query(
+      "SELECT * FROM traffic_logs_v2 ORDER BY timestamp DESC LIMIT 100", conn
+  )
+  if not df_traffic.empty:
+    st.dataframe(df_traffic, use_container_width=True)
+  else:
+    st.info("No traffic density logs recorded yet.")
