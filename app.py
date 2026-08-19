@@ -1,7 +1,7 @@
 import base64
 from collections import OrderedDict
 import datetime
-import gc
+import gc  # <--- NEW ADD-ON: Garbage Collection
 import os
 import random
 import sqlite3
@@ -18,14 +18,10 @@ from sklearn.linear_model import LinearRegression
 import streamlit as st
 import torch
 
-st.set_page_config(
-    page_title="Smart Traffic Management",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="ASTRA Smart Traffic Management", layout="wide", initial_sidebar_state="expanded")
 
 # ==========================================
-# 🛑 SECURE TELEGRAM CREDENTIALS 🛑
+# 🛑 PERFECT TELEGRAM CREDENTIALS 🛑
 # ==========================================
 BOT_TOKEN = st.secrets["BOT_TOKEN"]
 CHAT_ID = st.secrets["CHAT_ID"]
@@ -551,150 +547,157 @@ with st.sidebar:
 # ==========================================
 # 🛑 PAGE 1: LIVE AI FEED 🛑
 # ==========================================
-if app_mode == "Live AI Feed":
-  camera_url = st.text_input("Video Source", "traffic.mp4")
-  col1, col2 = st.columns(2)
+elif app_mode == "Live AI Feed":
+    camera_url = st.text_input("Video Source", "traffic.mp4")
+    col1, col2 = st.columns(2)
 
-  if col1.button("Start Camera"):
-    st.session_state.running = True
-  if col2.button("Stop Camera"):
-    st.session_state.running = False
-    if "cap" in st.session_state:
-      st.session_state.cap.release()
-      del st.session_state["cap"]
+    if col1.button("Start Camera"):
+        st.session_state.running = True
+    if col2.button("Stop Camera"):
+        st.session_state.running = False
+        if "cap" in st.session_state:
+            st.session_state.cap.release()
+            del st.session_state["cap"]
 
-  env_indicator = st.empty()
-  siren_placeholder = st.empty()
-  video_placeholder = st.empty()
-  graph_placeholder = st.empty()
-  lights_placeholder = st.empty()
-  status_panel = st.empty()
-  lane_placeholder = st.empty()
-  history_placeholder = st.empty()
-  metric_placeholder = st.empty()
+    env_indicator = st.empty()
+    siren_placeholder = st.empty()
+    video_placeholder = st.empty()
+    graph_placeholder = st.empty()
+    lights_placeholder = st.empty()
+    status_panel = st.empty()
+    lane_placeholder = st.empty()
+    history_placeholder = st.empty()
+    metric_placeholder = st.empty()
 
-  frame_counter = 0
+    frame_counter = 0
 
-  if not st.session_state.running:
-    video_placeholder.markdown(
-        """
+    if not st.session_state.running:
+        video_placeholder.markdown(
+            """
             <div class="loader-wrapper">
                 <div class="astra-spinner"></div>
                 <div class="loader-text">SYSTEM STANDBY<br><span style="font-size: 12px; color: #aaa; text-transform: none;">Waiting for Video Feed...</span></div>
             </div>
-        """,
-        unsafe_allow_html=True,
-    )
+            """,
+            unsafe_allow_html=True,
+        )
 
-  if st.session_state.running:
-    if "cap" not in st.session_state:
-      cam_src = int(camera_url) if camera_url.isdigit() else camera_url
-      st.session_state.cap = cv2.VideoCapture(cam_src)
-      st.session_state.cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
+    if st.session_state.running:
+        if "cap" not in st.session_state:
+            cam_src = int(camera_url) if camera_url.isdigit() else camera_url
+            st.session_state.cap = cv2.VideoCapture(cam_src)
+            st.session_state.cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
 
-    while st.session_state.running:
-      ret, frame = st.session_state.cap.read()
-      if not ret:
-        st.session_state.cap.release()
-        time.sleep(0.5)
-        cam_src = int(camera_url) if camera_url.isdigit() else camera_url
-        st.session_state.cap = cv2.VideoCapture(cam_src)
-        continue
+        while st.session_state.running:
+            # 1. Read the frame FIRST
+            ret, frame = st.session_state.cap.read()
+            
+            # 2. THEN flush the buffer to keep it strictly real-time
+            for _ in range(2):
+                st.session_state.cap.grab()
 
-      frame_counter += 1
-      current_time = time.time()
-      frame = cv2.resize(frame, (1024, 768))
+            # 3. Check if the camera disconnected
+            if not ret:
+                st.session_state.cap.release()
+                time.sleep(0.5)
+                cam_src = int(camera_url) if camera_url.isdigit() else camera_url
+                st.session_state.cap = cv2.VideoCapture(cam_src)
+                continue  # <--- CRITICAL FIX: Skip the rest of the loop until the frame is valid
 
-      # ---------------- AI FRAME INFERENCE ----------------
-      if frame_counter % 3 == 0:
-        if st.session_state.siren_trigger_event:
-          st.session_state.siren_active = True
-          st.session_state.siren_end_time = current_time + 12
-          st.session_state.siren_trigger_event = False
-          send_telegram_alert(
-              "🚑 AMBULANCE SIREN DETECTED! Initiating Emergency Preemption.",
-              force=True,
-          )
-          speak("Emergency vehicle detected. Clearing intersection.")
+            frame_counter += 1
+            current_time = time.time()
+            frame = cv2.resize(frame, (1024, 768))
 
-        if (
-            st.session_state.siren_active
-            and current_time > st.session_state.siren_end_time
-        ):
-          st.session_state.siren_active = False
+            # ---------------- AI FRAME INFERENCE ----------------
+            if frame_counter % 3 == 0:
+                if st.session_state.siren_trigger_event:
+                    st.session_state.siren_active = True
+                    st.session_state.siren_end_time = current_time + 12
+                    st.session_state.siren_trigger_event = False
+                    send_telegram_alert(
+                        "🚑 AMBULANCE SIREN DETECTED! Initiating Emergency Preemption.",
+                        force=True,
+                    )
+                    speak("Emergency vehicle detected. Clearing intersection.")
 
-        if frame_counter % 15 == 0:
-          gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-          laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-          st.session_state.weather_status = (
-              "Fog/Rain" if laplacian_var < 50 else "Clear"
-          )
-          st.session_state.current_yolo_conf = (
-              0.15 if laplacian_var < 50 else 0.20
-          )
+                if (
+                    st.session_state.siren_active
+                    and current_time > st.session_state.siren_end_time
+                ):
+                    st.session_state.siren_active = False
 
-        conf = st.session_state.get("current_yolo_conf", 0.20)
-        with torch.no_grad():
-          results = model(frame, size=640)
+                if frame_counter % 15 == 0:
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+                    st.session_state.weather_status = (
+                        "Fog/Rain" if laplacian_var < 50 else "Clear"
+                    )
+                    st.session_state.current_yolo_conf = (
+                        0.15 if laplacian_var < 50 else 0.20
+                    )
 
-        df = results.pandas().xyxy[0]
-        df = df[df["confidence"] > conf]
-        detections = df[df["name"].isin(target_classes)]
-        st.session_state.cached_detections = detections
+                conf = st.session_state.get("current_yolo_conf", 0.20)
+                with torch.no_grad():
+                    results = model(frame, size=640)
 
-        detected_ambulance_lane = None
-        if ambulance_demo:
-          h, w, _ = frame.shape
-          lanes_region_temp = {
-              "Lane 1": (0, 0, w // 2, h // 2),
-              "Lane 2": (w // 2, 0, w, h // 2),
-              "Lane 3": (0, h // 2, w // 2, h),
-              "Lane 4": (w // 2, h // 2, w, h),
-          }
-          for _, det in detections.iterrows():
-            if det["name"] in ["truck", "bus"]:
-              cx = (int(det.xmin) + int(det.xmax)) // 2
-              cy = (int(det.ymin) + int(det.ymax)) // 2
-              for lane, (lx1, ly1, lx2, ly2) in lanes_region_temp.items():
-                if lx1 <= cx <= lx2 and ly1 <= cy <= ly2:
-                  detected_ambulance_lane = lane
-                  break
+                df = results.pandas().xyxy[0]
+                df = df[df["confidence"] > conf]
+                detections = df[df["name"].isin(target_classes)]
+                st.session_state.cached_detections = detections
 
-        col_w = 1024 // 4
-        lanes_region = {
-            "Lane 1": (0, 0, col_w, 768),
-            "Lane 2": (col_w, 0, col_w * 2, 768),
-            "Lane 3": (col_w * 2, 0, col_w * 3, 768),
-            "Lane 4": (col_w * 3, 0, 1024, 768),
-        }
+                detected_ambulance_lane = None
+                if ambulance_demo:
+                    h, w, _ = frame.shape
+                    lanes_region_temp = {
+                        "Lane 1": (0, 0, w // 2, h // 2),
+                        "Lane 2": (w // 2, 0, w, h // 2),
+                        "Lane 3": (0, h // 2, w // 2, h),
+                        "Lane 4": (w // 2, h // 2, w, h),
+                    }
+                    for _, det in detections.iterrows():
+                        if det["name"] in ["truck", "bus"]:
+                            cx = (int(det.xmin) + int(det.xmax)) // 2
+                            cy = (int(det.ymin) + int(det.ymax)) // 2
+                            for lane, (lx1, ly1, lx2, ly2) in lanes_region_temp.items():
+                                if lx1 <= cx <= lx2 and ly1 <= cy <= ly2:
+                                    detected_ambulance_lane = lane
+                                    break
 
-        l_counts = {lane: 0 for lane in LANES}
-        d_counts = {
-            lane: {"car": 0, "motorcycle": 0, "bus": 0, "truck": 0}
-            for lane in LANES
-        }
+                col_w = 1024 // 4
+                lanes_region = {
+                    "Lane 1": (0, 0, col_w, 768),
+                    "Lane 2": (col_w, 0, col_w * 2, 768),
+                    "Lane 3": (col_w * 2, 0, col_w * 3, 768),
+                    "Lane 4": (col_w * 3, 0, 1024, 768),
+                }
 
-        for _, det in detections.iterrows():
-          cx = (int(det.xmin) + int(det.xmax)) // 2
-          cy = (int(det.ymin) + int(det.ymax)) // 2
-          v_class = det["name"]
-          for lane, (lx1, ly1, lx2, ly2) in lanes_region.items():
-            if lx1 <= cx < lx2 and ly1 <= cy <= ly2:
-              l_counts[lane] += 1
-              if v_class in d_counts[lane]:
-                d_counts[lane][v_class] += 1
+                l_counts = {lane: 0 for lane in LANES}
+                d_counts = {
+                    lane: {"car": 0, "motorcycle": 0, "bus": 0, "truck": 0}
+                    for lane in LANES
+                }
 
-        alpha = 0.20
-        for l in LANES:
-          st.session_state.smoothed_lane_counts[l] = (alpha * l_counts[l]) + (
-              (1 - alpha) * st.session_state.smoothed_lane_counts[l]
-          )
+                for _, det in detections.iterrows():
+                    cx = (int(det.xmin) + int(det.xmax)) // 2
+                    cy = (int(det.ymin) + int(det.ymax)) // 2
+                    v_class = det["name"]
+                    for lane, (lx1, ly1, lx2, ly2) in lanes_region.items():
+                        if lx1 <= cx < lx2 and ly1 <= cy <= ly2:
+                            l_counts[lane] += 1
+                            if v_class in d_counts[lane]:
+                                d_counts[lane][v_class] += 1
 
-        st.session_state.lane_counts = l_counts
-        st.session_state.detailed_counts = d_counts
+                alpha = 0.20
+                for l in LANES:
+                    st.session_state.smoothed_lane_counts[l] = (alpha * l_counts[l]) + (
+                        (1 - alpha) * st.session_state.smoothed_lane_counts[l]
+                    )
 
-        active_lane = None
-        forced_lane = None
+                st.session_state.lane_counts = l_counts
+                st.session_state.detailed_counts = d_counts
+
+                active_lane = None
+                forced_lane = None
 
 
         # ---------------- ROBUST SIREN AUDIO PLAYER (IFRAME) ----------------
