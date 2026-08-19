@@ -301,41 +301,34 @@ def simulate_siren():
       st.session_state.siren_trigger_event = True
 
 
-# ---------------- LOAD MODEL (SAFE HUB WORKAROUND) ----------------
+# ---------------- BULLET-PROOF MODEL LOADER ----------------
 @st.cache_resource
 def load_model():
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-  # Bypass torch.hub bug by directly loading via alternative source or setting trust & github ref
-  torch.hub._validate_not_a_forked_repo = lambda a, b, c: True
-  model = torch.hub.load(
-      "ultralytics/yolov5",
-      "custom",
-      path="yolov5s.pt",
-      force_reload=False,
-      trust_repo=True,
-  ).to(device)
+  # Directly download model weights using torch state instead of broken hubconf.py scripts
+  model_path = "yolov5s.pt"
+  if not os.path.exists(model_path):
+    torch.hub.download_url_to_file(
+        "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5s.pt",
+        model_path,
+    )
+  model = torch.load(model_path, map_location=device)["model"].float()
   if torch.cuda.is_available():
     model.half()
   model.eval()
   model.iou = 0.45
-  return model
+  return model.to(device)
 
 
 with st.spinner("🤖 ASTRA AI Core Initializing... Loading Network..."):
-  try:
-    model = load_model()
-  except Exception:
-    # Fallback initialization if custom path missing
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = torch.hub.load(
-        "ultralytics/yolov5", "yolov5s", pretrained=True, trust_repo=True
-    ).to(device)
-    if torch.cuda.is_available():
-      model.half()
-    model.eval()
-    model.iou = 0.45
-
-target_classes = ["car", "truck", "bus", "motorcycle", "person"]
+  model = load_model()
+target_classes = [
+    "car",
+    "truck",
+    "bus",
+    "motorcycle",
+    "person",
+]  # COCO class IDs mapping if required
 
 
 # ---------------- TELEGRAM ALERT FUNC ----------------
@@ -680,10 +673,47 @@ elif app_mode == "Live AI Feed":
 
         conf = st.session_state.get("current_yolo_conf", 0.20)
         with torch.no_grad():
-          results = model(frame, size=640)
+          results = model(frame)
 
-        df = results.pandas().xyxy[0]
-        df = df[df["confidence"] > conf]
+        # Parse native model results safely
+        if isinstance(results, list):
+          results = results[0]
+
+        # Convert detections to pandas df
+        detection_data = []
+        if hasattr(results, "boxes") and results.boxes is not None:
+          for box in results.boxes:
+            coords = box.xyxy[0].tolist()
+            confidence = float(box.conf[0])
+            cls_id = int(box.cls[0])
+            name = (
+                model.names[cls_id]
+                if hasattr(model, "names")
+                else target_classes[min(cls_id, len(target_classes) - 1)]
+            )
+            if confidence > conf:
+              detection_data.append([
+                  coords[0],
+                  coords[1],
+                  coords[2],
+                  coords[3],
+                  confidence,
+                  cls_id,
+                  name,
+              ])
+
+        df = pd.DataFrame(
+            detection_data,
+            columns=[
+                "xmin",
+                "ymin",
+                "xmax",
+                "ymax",
+                "confidence",
+                "class",
+                "name",
+            ],
+        )
         detections = df[df["name"].isin(target_classes)]
         st.session_state.cached_detections = detections
 
