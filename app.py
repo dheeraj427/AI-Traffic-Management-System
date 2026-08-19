@@ -18,7 +18,6 @@ from scipy.spatial import distance
 from sklearn.linear_model import LinearRegression
 import streamlit as st
 import torch
-from ultralytics import YOLO
 
 st.set_page_config(
     page_title="ASTRA Smart Traffic Management",
@@ -302,10 +301,17 @@ def simulate_siren():
       st.session_state.siren_trigger_event = True
 
 
-# ---------------- LOAD MODEL (STABLE ULTRALYTICS API) ----------------
+# ---------------- LOAD MODEL (ROBUST HUB CACHE) ----------------
 @st.cache_resource
 def load_model():
-  model = YOLO("yolov5s.pt")
+  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+  model = torch.hub.load(
+      "ultralytics/yolov5", "yolov5s", pretrained=True, trust_repo=True
+  ).to(device)
+  if torch.cuda.is_available():
+    model.half()
+  model.eval()
+  model.iou = 0.45
   return model
 
 
@@ -656,38 +662,10 @@ elif app_mode == "Live AI Feed":
 
         conf = st.session_state.get("current_yolo_conf", 0.20)
         with torch.no_grad():
-          results = model(frame, conf=conf, imgsz=640, verbose=False)[0]
+          results = model(frame, size=640)
 
-        # Convert ultralytics boxes to pandas dataframe format for backward compatibility
-        boxes = results.boxes
-        detection_data = []
-        for box in boxes:
-          coords = box.xyxy[0].tolist()
-          confidence = float(box.conf[0])
-          cls_id = int(box.cls[0])
-          name = results.names[cls_id]
-          detection_data.append([
-              coords[0],
-              coords[1],
-              coords[2],
-              coords[3],
-              confidence,
-              cls_id,
-              name,
-          ])
-
-        df = pd.DataFrame(
-            detection_data,
-            columns=[
-                "xmin",
-                "ymin",
-                "xmax",
-                "ymax",
-                "confidence",
-                "class",
-                "name",
-            ],
-        )
+        df = results.pandas().xyxy[0]
+        df = df[df["confidence"] > conf]
         detections = df[df["name"].isin(target_classes)]
         st.session_state.cached_detections = detections
 
