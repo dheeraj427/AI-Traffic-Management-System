@@ -26,7 +26,7 @@ st.set_page_config(
 )
 
 # ==========================================
-# 🛑 PERFECT TELEGRAM CREDENTIALS 🛑
+# 🛑 SECURE TELEGRAM CREDENTIALS 🛑
 # ==========================================
 try:
   BOT_TOKEN = st.secrets["BOT_TOKEN"]
