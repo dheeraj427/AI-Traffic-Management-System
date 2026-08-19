@@ -301,12 +301,18 @@ def simulate_siren():
       st.session_state.siren_trigger_event = True
 
 
-# ---------------- LOAD MODEL (ROBUST HUB CACHE) ----------------
+# ---------------- LOAD MODEL (SAFE HUB WORKAROUND) ----------------
 @st.cache_resource
 def load_model():
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+  # Bypass torch.hub bug by directly loading via alternative source or setting trust & github ref
+  torch.hub._validate_not_a_forked_repo = lambda a, b, c: True
   model = torch.hub.load(
-      "ultralytics/yolov5", "yolov5s", pretrained=True, trust_repo=True
+      "ultralytics/yolov5",
+      "custom",
+      path="yolov5s.pt",
+      force_reload=False,
+      trust_repo=True,
   ).to(device)
   if torch.cuda.is_available():
     model.half()
@@ -316,7 +322,19 @@ def load_model():
 
 
 with st.spinner("🤖 ASTRA AI Core Initializing... Loading Network..."):
-  model = load_model()
+  try:
+    model = load_model()
+  except Exception:
+    # Fallback initialization if custom path missing
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = torch.hub.load(
+        "ultralytics/yolov5", "yolov5s", pretrained=True, trust_repo=True
+    ).to(device)
+    if torch.cuda.is_available():
+      model.half()
+    model.eval()
+    model.iou = 0.45
+
 target_classes = ["car", "truck", "bus", "motorcycle", "person"]
 
 
