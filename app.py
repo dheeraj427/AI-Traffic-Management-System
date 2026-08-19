@@ -236,6 +236,7 @@ st.session_state.audio_enabled = audio_enabled
 
 # ---------------- CLOUD-SAFE AUDIO FUNCTIONS ----------------
 def speak(text):
+  """Cloud-safe text-to-speech that streams audio directly to the browser."""
   if "audio_enabled" in st.session_state and not st.session_state.audio_enabled:
     return
   try:
@@ -307,6 +308,7 @@ def simulate_siren():
     time.sleep(3)
 
 
+# Only spawn thread when camera is actively running
 if (
     st.session_state.get("running", False)
     and "siren_thread" not in st.session_state
@@ -315,7 +317,7 @@ if (
   st.session_state.siren_thread = True
 
 
-# ---------------- LOAD MODEL (ORIGINAL WORKING METHOD) ----------------
+# ---------------- LOAD CUDA / CPU YOLO ----------------
 @st.cache_resource
 def load_model():
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -339,10 +341,12 @@ def send_telegram_alert(message, force=False):
   if not st.session_state.get("alerts_enabled", False):
     return
   current_time = time.time()
+
   if not force and (
       current_time - st.session_state.last_telegram_time < 15
   ):
     return
+
   st.session_state.last_telegram_time = current_time
   st.toast("Sending Alert...", icon="🚨")
   try:
@@ -437,6 +441,7 @@ def traffic_lights_with_timers(
     with col:
       is_active = lane == active_lane
       wrapper_class = "pulse" if is_active else ""
+
       percentage = 100
       if is_active and isinstance(lane_wait[lane], int):
         total_duration = st.session_state.lane_durations.get(lane, 60)
@@ -455,7 +460,7 @@ def traffic_lights_with_timers(
                 <div style="width:40px;height:40px;background:lime;border-radius:50%;margin:auto; box-shadow: 0 0 15px lime;"></div>
                 <p style="color:lime;text-align:center;font-size:24px; font-weight:bold;">{lane_wait[lane]}s</p>
                 <div style="width: 100%; background-color: rgba(255,255,255,0.1); border-radius: 5px; height: 6px;">
-                    <div style="width: {percentage}%; height: 6px; background-color: lime; border-radius: 5px;"></div>
+                    <div style="width: {percentage}%; height: 6px; background-color: lime; border-radius: 5px; transition: width 0.3s linear;"></div>
                 </div>
                 </div>
                 """,
@@ -487,15 +492,16 @@ def lane_breakdown_ui(detailed_counts, active_lane=None):
     border_color = (
         "rgba(0, 255, 0, 0.4)" if is_active else "rgba(255, 255, 255, 0.1)"
     )
+
     st.markdown(
         f"""
         <div class="glass-card glow-box fade-in {wrapper_class}" style="background:#0f172a; margin:10px; border:1px solid {border_color};">
             <h4 style="color:white; margin-bottom: 10px;">{title} <span style="float:right; font-size: 14px;">{status}</span></h4>
             <div style="display: flex; justify-content: space-between; color: #aaa; font-size: 18px; padding: 10px 0;">
-                <span>🚗 <b style="color:white">{data['car']}</b></span>
-                <span>🏍️ <b style="color:white">{data['motorcycle']}</b></span>
-                <span>🚌 <b style="color:white">{data['bus']}</b></span>
-                <span>🚚 <b style="color:white">{data['truck']}</b></span>
+                <span style="transition: all 0.3s;">🚗 <b style="color:white">{data['car']}</b></span>
+                <span style="transition: all 0.3s;">🏍️ <b style="color:white">{data['motorcycle']}</b></span>
+                <span style="transition: all 0.3s;">🚌 <b style="color:white">{data['bus']}</b></span>
+                <span style="transition: all 0.3s;">🚚 <b style="color:white">{data['truck']}</b></span>
             </div>
         </div>
         """,
@@ -529,17 +535,34 @@ with st.sidebar:
 
   if app_mode == "Live AI Feed":
     st.header("⚙️ AI Core Controls")
+    st.caption("⚠️ Enable toggles BEFORE starting camera.")
+
+    # ---------------- AMBULANCE DEMO TOGGLE ----------------
+    st.markdown("---")
     ambulance_demo = st.toggle("🚑 Ambulance Auto-Routing", value=False)
+    st.caption(
+        "*(Visually detects an ambulance and instantly clears its specific lane"
+        " while halting others)*"
+    )
+
+    # ---------------- ALERTS MUTE TOGGLE ----------------
     st.markdown("---")
     st.session_state.alerts_enabled = st.toggle(
         "🔕 Enable Telegram Alerts", value=False
     )
     st.caption("*(Keep OFF during testing to prevent phone spam)*")
     st.markdown("---")
+
+    st.subheader("🧠 Q-Learning Mode")
     rl_enabled = st.toggle("Enable Auto-Learning", value=False)
+    if rl_enabled:
+      st.write(f"Q-Scores: {st.session_state.rl_q_table}")
+
+    st.subheader("🚑 Audio AI")
     st.session_state.run_siren_sim = st.toggle(
         "Listen for Sirens", value=False
     )
+
   elif app_mode == "Data Analytics":
     st.header("📊 Database Export")
     df_export = pd.DataFrame(st.session_state.full_data_log)
@@ -567,6 +590,7 @@ if app_mode == "Live AI Feed":
       st.session_state.cap.release()
       del st.session_state["cap"]
 
+  alert_placeholder = st.empty()
   env_indicator = st.empty()
   siren_placeholder = st.empty()
   video_placeholder = st.empty()
@@ -574,6 +598,8 @@ if app_mode == "Live AI Feed":
   lights_placeholder = st.empty()
   status_panel = st.empty()
   lane_placeholder = st.empty()
+  history_placeholder = st.empty()
+  metric_placeholder = st.empty()
 
   frame_counter = 0
 
@@ -582,7 +608,7 @@ if app_mode == "Live AI Feed":
         """
             <div class="loader-wrapper">
                 <div class="astra-spinner"></div>
-                <div class="loader-text">SYSTEM STANDBY<br><span style="font-size: 12px; color: #aaa; text-transform: none;">Waiting for Video Feed...</span></div>
+                <div class="loader-text">SYSTEM STAND BY<br><span style="font-size: 12px; color: #aaa; text-transform: none;">Waiting for Video Feed...</span></div>
             </div>
         """,
         unsafe_allow_html=True,
@@ -597,10 +623,6 @@ if app_mode == "Live AI Feed":
     while st.session_state.running:
       ret, frame = st.session_state.cap.read()
 
-      # BUFFER FLUSH: Prevents video freezing and lagging behind
-      for _ in range(2):
-        st.session_state.cap.grab()
-
       if not ret:
         st.session_state.cap.release()
         time.sleep(0.5)
@@ -610,10 +632,15 @@ if app_mode == "Live AI Feed":
 
       frame_counter += 1
       current_time = time.time()
+
+      if frame_counter % 2 == 0:
+        st.session_state.cap.grab()
+
       frame = cv2.resize(frame, (1024, 768))
 
       # ---------------- AI FRAME INFERENCE ----------------
       if frame_counter % 3 == 0:
+
         if st.session_state.siren_trigger_event:
           st.session_state.siren_active = True
           st.session_state.siren_end_time = current_time + 12
@@ -633,21 +660,35 @@ if app_mode == "Live AI Feed":
         if frame_counter % 15 == 0:
           gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
           laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-          st.session_state.weather_status = (
-              "Fog/Rain" if laplacian_var < 50 else "Clear"
-          )
-          st.session_state.current_yolo_conf = (
-              0.15 if laplacian_var < 50 else 0.20
-          )
+          is_foggy = laplacian_var < 50
+
+          yolo_conf = 0.20
+          weather_status = "Clear"
+
+          if is_foggy:
+            weather_status = "Fog/Rain"
+            yolo_conf = 0.15
+            env_indicator.warning(
+                "🌫️ Bad Weather Detected: Lowering YOLO confidence threshold &"
+                " engaging CLAHE."
+            )
+          else:
+            env_indicator.empty()
+          st.session_state.weather_status = weather_status
+          st.session_state.current_yolo_conf = yolo_conf
 
         conf = st.session_state.get("current_yolo_conf", 0.20)
+
         with torch.no_grad():
           results = model(frame, size=640)
 
         df = results.pandas().xyxy[0]
         df = df[df["confidence"] > conf]
-        detections = df[df["name"].isin(target_classes)]
-        st.session_state.cached_detections = detections
+
+        st.session_state.cached_detections = df[
+            df["name"].isin(target_classes)
+        ]
+        detections = st.session_state.cached_detections
 
         detected_ambulance_lane = None
         if ambulance_demo:
@@ -680,26 +721,17 @@ if app_mode == "Live AI Feed":
             lane: {"car": 0, "motorcycle": 0, "bus": 0, "truck": 0}
             for lane in LANES
         }
-        rects = []
 
         for _, det in detections.iterrows():
-          x1, y1, x2, y2 = (
-              int(det.xmin),
-              int(det.ymin),
-              int(det.xmax),
-              int(det.ymax),
-          )
-          cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+          cx = (int(det.xmin) + int(det.xmax)) // 2
+          cy = (int(det.ymin) + int(det.ymax)) // 2
           v_class = det["name"]
-          rects.append((x1, y1, x2, y2))
 
           for lane, (lx1, ly1, lx2, ly2) in lanes_region.items():
-            if lx1 <= cx < lx2 and ly1 <= cy < ly2:
+            if lx1 <= cx < lx2 and ly1 <= cy <= ly2:
               l_counts[lane] += 1
               if v_class in d_counts[lane]:
                 d_counts[lane][v_class] += 1
-
-        objects = st.session_state.tracker.update(rects)
 
         alpha = 0.20
         for l in LANES:
@@ -744,6 +776,7 @@ if app_mode == "Live AI Feed":
         if detected_ambulance_lane:
           forced_lane = detected_ambulance_lane
           active_lane = detected_ambulance_lane
+
           if not st.session_state.siren_playing_now:
             st.session_state.siren_playing_now = True
             send_telegram_alert(
@@ -751,13 +784,16 @@ if app_mode == "Live AI Feed":
                 f" {LANE_NAMES[active_lane].upper()}!",
                 force=True,
             )
+
           trigger_siren_audio()
 
         elif s_sim_on and s_active_bool:
           forced_lane = "EMERGENCY"
           active_lane = "EMERGENCY"
+
           if not st.session_state.siren_playing_now:
             st.session_state.siren_playing_now = True
+
           trigger_siren_audio()
 
         else:
@@ -779,6 +815,13 @@ if app_mode == "Live AI Feed":
           current_state = traffic_status(
               sum(st.session_state.lane_counts.values())
           )
+
+          if rl_enabled and sum(st.session_state.lane_counts.values()) > 0:
+            reward = 1 if current_state in ["LOW", "MODERATE"] else -1
+            st.session_state.rl_q_table[current_state] = round(
+                st.session_state.rl_q_table[current_state] + 0.1 * reward, 2
+            )
+
           st.session_state.lane_durations = calculate_lane_times(
               st.session_state.lane_counts, rl_enabled, current_state
           )
@@ -794,11 +837,31 @@ if app_mode == "Live AI Feed":
                   st.session_state.cycle_schedule[0]["lane"]
               ],
           )
+        else:
+          time_shift = (
+              current_time - st.session_state.cycle_schedule[0]["start"]
+              if st.session_state.cycle_schedule
+              else 0
+          )
+          if time_shift > 0:
+            for item in st.session_state.cycle_schedule:
+              item["start"] += 0.1
+              item["end"] += 0.1
+            st.session_state.signal_end_time += 0.1
 
         st.session_state.active_lane = active_lane
         st.session_state.forced_lane = forced_lane
 
-        # Full Trajectory Tracking & Anomaly Checking Logic
+        rects = []
+        for _, det in detections[
+            detections["name"] != "person"
+        ].iterrows():
+          rects.append(
+              (int(det.xmin), int(det.ymin), int(det.xmax), int(det.ymax))
+          )
+
+        objects = st.session_state.tracker.update(rects)
+
         active_ids = list(objects.keys())
         st.session_state.track_history = {
             k: v
@@ -821,6 +884,7 @@ if app_mode == "Live AI Feed":
 
           history = st.session_state.track_history[objectID]
           is_anomaly = False
+
           int_x1, int_x2 = 350, 674
           int_y1, int_y2 = 250, 518
 
@@ -875,6 +939,7 @@ if app_mode == "Live AI Feed":
                   "Accident/Breakdown suspected! Vehicle ID:"
                   f" {objectID} stopped in intersection."
               )
+
           elif is_violation:
             color = (255, 0, 0)
             alert_text = "VIOLATION!"
@@ -899,13 +964,19 @@ if app_mode == "Live AI Feed":
               "color": color,
               "alert": alert_text,
           })
+
         st.session_state.draw_commands = draw_cmds
+
+        del draw_cmds
+        gc.collect()
 
       # --- RENDER TICK ---
       if frame_counter % 5 == 0:
         annotated = frame.copy()
+
         int_x1, int_x2 = 350, 674
         int_y1, int_y2 = 250, 518
+
         cv2.rectangle(
             annotated, (int_x1, int_y1), (int_x2, int_y2), (0, 255, 255), 2
         )
@@ -948,13 +1019,34 @@ if app_mode == "Live AI Feed":
             )
 
         for _, det in st.session_state.cached_detections.iterrows():
-          cv2.rectangle(
-              annotated,
-              (int(det.xmin), int(det.ymin)),
-              (int(det.xmax), int(det.ymax)),
-              (0, 255, 255),
-              2,
-          )
+          if (
+              ambulance_demo
+              and det["name"] in ["truck", "bus"]
+              and st.session_state.forced_lane
+          ):
+            box_color = (0, 0, 255)
+            cv2.putText(
+                annotated,
+                "AMBULANCE",
+                (int(det.xmin), int(det.ymin) - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                box_color,
+                2,
+            )
+          else:
+            box_color = (0, 255, 255)
+            cv2.rectangle(
+                annotated,
+                (int(det.xmin), int(det.ymin)),
+                (int(det.xmax), int(det.ymax)),
+                box_color,
+                2,
+            )
+
+        scan_y = (frame_counter * 28) % 768
+        cv2.line(annotated, (0, scan_y), (1024, scan_y), (0, 255, 255), 2)
+        cv2.line(annotated, (0, scan_y - 1), (1024, scan_y - 1), (0, 150, 150), 1)
 
         _, buffer = cv2.imencode(
             ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 85]
@@ -985,10 +1077,11 @@ if app_mode == "Live AI Feed":
         fig.patch.set_facecolor("#0f172a")
         ax.set_facecolor("#0f172a")
         ax.tick_params(colors="white")
-        ax.set_ylim(
-            0,
-            max(15, max(display_counts.values()) if display_counts else 15),
+
+        max_val = (
+            max(display_counts.values()) if display_counts.values() else 0
         )
+        ax.set_ylim(0, max(15, max_val + 2))
 
         graph_placeholder.pyplot(fig, clear_figure=True)
         plt.close(fig)
@@ -1017,6 +1110,24 @@ if app_mode == "Live AI Feed":
           cols[1].metric("Congestion Level", level)
           cols[2].metric("Weather", st.session_state.weather_status)
           cols[3].metric("Engine Mode", "UNCAPPED FPS TENSOR OPTIMIZED")
+
+          if (
+              ambulance_demo
+              and st.session_state.forced_lane
+              and st.session_state.forced_lane != "EMERGENCY"
+              and st.session_state.forced_lane != "PEDESTRIAN"
+          ):
+            st.error(
+                "🚨 VISUAL AMBULANCE OVERRIDE:"
+                f" {LANE_NAMES.get(st.session_state.forced_lane, st.session_state.forced_lane).upper()} CLEARED."
+            )
+          elif st.session_state.forced_lane == "EMERGENCY":
+            st.error(
+                "🚨 SIREN DETECTED: ALL LANES STOPPED. CLEARING INTERSECTION."
+            )
+          elif st.session_state.forced_lane == "PEDESTRIAN":
+            st.warning("🚶‍♂️ PEDESTRIAN CROSSING ACTIVE.")
+
           st.markdown("</div>", unsafe_allow_html=True)
 
         with lane_placeholder.container():
@@ -1024,39 +1135,27 @@ if app_mode == "Live AI Feed":
               st.session_state.detailed_counts, st.session_state.active_lane
           )
 
-      # ---------------- MEMORY NUKE (Every 30 frames) ----------------
-      if frame_counter % 30 == 0:
-        gc.collect()
-        if torch.cuda.is_available():
-          torch.cuda.empty_cache()
-
 # ==========================================
-# 🛑 PAGE 3: DATA ANALYTICS 🛑
+# 🛑 PAGE 2: DATA ANALYTICS 🛑
 # ==========================================
 elif app_mode == "Data Analytics":
   st.title("📊 Data Analytics & System Logs")
   conn = st.session_state.db_conn
 
   st.subheader("🚨 Intersection Violations Log")
-  try:
-    df_violations = pd.read_sql_query(
-        "SELECT * FROM violations ORDER BY timestamp DESC LIMIT 100", conn
-    )
-    if not df_violations.empty:
-      st.dataframe(df_violations, use_container_width=True)
-    else:
-      st.info("No traffic violations recorded yet.")
-  except:
-    st.warning("Database table 'violations' not yet initialized.")
+  df_violations = pd.read_sql_query(
+      "SELECT * FROM violations ORDER BY timestamp DESC LIMIT 100", conn
+  )
+  if not df_violations.empty:
+    st.dataframe(df_violations, use_container_width=True)
+  else:
+    st.info("No traffic violations or anomalies recorded yet.")
 
   st.subheader("📈 Traffic Density Log")
-  try:
-    df_traffic = pd.read_sql_query(
-        "SELECT * FROM traffic_logs_v2 ORDER BY timestamp DESC LIMIT 100", conn
-    )
-    if not df_traffic.empty:
-      st.dataframe(df_traffic, use_container_width=True)
-    else:
-      st.info("No traffic density logs recorded yet.")
-  except:
-    st.warning("Database table 'traffic_logs_v2' not yet initialized.")
+  df_traffic = pd.read_sql_query(
+      "SELECT * FROM traffic_logs_v2 ORDER BY timestamp DESC LIMIT 100", conn
+  )
+  if not df_traffic.empty:
+    st.dataframe(df_traffic, use_container_width=True)
+  else:
+    st.info("No traffic density logs recorded yet.")
