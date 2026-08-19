@@ -14,13 +14,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import requests
-from scipy.spatial import distance
 from sklearn.linear_model import LinearRegression
 import streamlit as st
 import torch
 
 st.set_page_config(
-    page_title="ASTRA Smart Traffic Management",
+    page_title="Smart Traffic Management",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -28,12 +27,9 @@ st.set_page_config(
 # ==========================================
 # 🛑 PERFECT TELEGRAM CREDENTIALS 🛑
 # ==========================================
-try:
-  BOT_TOKEN = st.secrets["BOT_TOKEN"]
-  CHAT_ID = st.secrets["CHAT_ID"]
-except:
-  BOT_TOKEN = ""
-  CHAT_ID = ""
+# Read secrets securely from .streamlit/secrets.toml
+BOT_TOKEN = st.secrets["BOT_TOKEN"]
+CHAT_ID = st.secrets["CHAT_ID"]
 
 
 # ---------------- DATABASE INIT ----------------
@@ -63,7 +59,7 @@ def log_to_db(table, data):
 # ---------------- TRACKER ----------------
 class CentroidTracker:
 
-  def __init__(self, maxDisappeared=50):
+  def __init__(self, maxDisappeared=15):
     self.nextObjectID = 0
     self.objects = OrderedDict()
     self.disappeared = OrderedDict()
@@ -99,36 +95,34 @@ class CentroidTracker:
     else:
       objectIDs = list(self.objects.keys())
       objectCentroids = list(self.objects.values())
-      D = distance.cdist(np.array(objectCentroids), inputCentroids)
+      D = np.zeros((len(objectCentroids), len(inputCentroids)))
+      for i, oc in enumerate(objectCentroids):
+        for j, ic in enumerate(inputCentroids):
+          D[i, j] = np.linalg.norm(np.array(oc) - np.array(ic))
       rows = D.min(axis=1).argsort()
       cols = D.argmin(axis=1)[rows]
-
-      usedRows, usedCols = set(), set()
+      usedRows = set()
+      usedCols = set()
       for row, col in zip(rows, cols):
         if row in usedRows or col in usedCols:
+          continue
+        if D[row, col] > 50:
           continue
         objectID = objectIDs[row]
         self.objects[objectID] = inputCentroids[col]
         self.disappeared[objectID] = 0
         usedRows.add(row)
         usedCols.add(col)
-
       unusedRows = set(range(0, D.shape[0])).difference(usedRows)
       unusedCols = set(range(0, D.shape[1])).difference(usedCols)
-
       for row in unusedRows:
         objectID = objectIDs[row]
         self.disappeared[objectID] += 1
         if self.disappeared[objectID] > self.maxDisappeared:
           self.deregister(objectID)
-
       for col in unusedCols:
         self.register(inputCentroids[col])
-
     return self.objects
-
-
-tracker = CentroidTracker(maxDisappeared=10)
 
 
 # ---------------- GLOBAL UI & ANIMATIONS ----------------
@@ -191,6 +185,8 @@ if "signal_end_time" not in st.session_state:
   st.session_state.signal_end_time = 0
 if "last_status_time" not in st.session_state:
   st.session_state.last_status_time = 0
+if "tracker" not in st.session_state:
+  st.session_state.tracker = CentroidTracker(maxDisappeared=15)
 if "track_history" not in st.session_state:
   st.session_state.track_history = {}
 if "last_telegram_time" not in st.session_state:
@@ -246,11 +242,14 @@ def speak(text):
     tts = gTTS(text=text, lang="en", slow=False)
     audio_file = f"voice_{random.randint(1000, 9999)}.mp3"
     tts.save(audio_file)
+
     with open(audio_file, "rb") as f:
       data = f.read()
     b64 = base64.b64encode(data).decode()
+
     if os.path.exists(audio_file):
       os.remove(audio_file)
+
     audio_html = f"""
         <audio autoplay style="display:none;">
             <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
@@ -295,13 +294,28 @@ if st.session_state.audio_enabled:
 
 # ---------------- SIREN SIMULATION THREAD ----------------
 def simulate_siren():
-  while st.session_state.get("siren_simulation", False):
-    time.sleep(random.randint(15, 30))
-    if random.random() < 0.05:
-      st.session_state.siren_trigger_event = True
+  while True:
+    if not st.session_state.get("run_siren_sim", False):
+      st.session_state.siren_active = False
+    if (
+        st.session_state.get("run_siren_sim", False)
+        and st.session_state.running
+    ):
+      if random.random() < 0.05:
+        st.session_state.siren_trigger_event = True
+        time.sleep(12)
+    time.sleep(3)
 
 
-# ---------------- ORIGINAL WORKING MODEL LOADER ----------------
+if (
+    st.session_state.get("running", False)
+    and "siren_thread" not in st.session_state
+):
+  threading.Thread(target=simulate_siren, daemon=True).start()
+  st.session_state.siren_thread = True
+
+
+# ---------------- LOAD MODEL (OG WORKING HUB METHOD) ----------------
 @st.cache_resource
 def load_model():
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -322,9 +336,7 @@ target_classes = ["car", "truck", "bus", "motorcycle", "person"]
 
 # ---------------- TELEGRAM ALERT FUNC ----------------
 def send_telegram_alert(message, force=False):
-  if not st.session_state.get("telegram_alerts", False) and not force:
-    return
-  if not BOT_TOKEN or not CHAT_ID:
+  if not st.session_state.get("alerts_enabled", False):
     return
   current_time = time.time()
   if not force and (
@@ -509,74 +521,41 @@ def lane_breakdown_ui(detailed_counts, active_lane=None):
 
 
 # ==========================================
-# 🛑 SIDEBAR NAVIGATION & TOGGLES 🛑
+# 🛑 SIDEBAR NAVIGATION 🛑
 # ==========================================
-st.sidebar.title("🚦 ASTRA Control Panel")
-app_mode = st.sidebar.selectbox(
-    "Navigate", ["Dashboard", "Live AI Feed", "Data Analytics"]
-)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("System Modules")
-ambulance_demo = st.sidebar.toggle("🚑 Ambulance Auto-Routing", value=False)
-telegram_alerts = st.sidebar.toggle("🔕 Enable Telegram Alerts", value=False)
-q_learning = st.sidebar.toggle("🧠 Enable Auto-Learning", value=True)
-siren_simulation = st.sidebar.toggle("🚨 Listen for Sirens", value=False)
-
-st.session_state.ambulance_demo = ambulance_demo
-st.session_state.telegram_alerts = telegram_alerts
-st.session_state.siren_simulation = siren_simulation
-
-if siren_simulation and not st.session_state.get("siren_thread_started"):
-  st.session_state.siren_thread_started = True
-  threading.Thread(target=simulate_siren, daemon=True).start()
-
-# ==========================================
-# 🛑 PAGE 1: HOME / DASHBOARD 🛑
-# ==========================================
-if app_mode == "Dashboard":
-  st.title("🚦 ASTRA Control Center")
-  st.markdown("### Advanced Smart Traffic Routing Architecture")
-
-  col1, col2, col3, col4 = st.columns(4)
-  total_vehicles = sum(st.session_state.smoothed_lane_counts.values())
-  congestion = "HIGH" if total_vehicles > 40 else "LOW"
-
-  col1.metric("Total Vehicles", int(total_vehicles))
-  col2.metric("Congestion Level", congestion)
-  col3.metric("Weather Status", st.session_state.weather_status)
-  col4.metric("Engine Mode", "UNCAPPED FPS TENSOR")
-
+with st.sidebar:
+  app_mode = st.radio("🛰️ ASTRA Navigation", ["Live AI Feed", "Data Analytics"])
   st.markdown("---")
-  st.subheader("Lane Density (EMA Smoothed)")
 
-  fig, ax = plt.subplots(figsize=(10, 4))
-  fig.patch.set_facecolor("#0e1117")
-  ax.set_facecolor("#0e1117")
-  ax.bar(
-      LANES,
-      list(st.session_state.smoothed_lane_counts.values()),
-      color=[
-          "#00ff00" if l == st.session_state.active_lane else "#1f77b4"
-          for l in LANES
-      ],
-  )
-  ax.set_ylim(
-      0, max(20, max(st.session_state.smoothed_lane_counts.values()) + 10)
-  )
-  ax.tick_params(colors="white")
-  st.pyplot(fig)
-
-  st.info(
-      "System Online. Navigate to 'Live AI Feed' to initialize inference"
-      " engine."
-  )
+  if app_mode == "Live AI Feed":
+    st.header("⚙️ AI Core Controls")
+    ambulance_demo = st.toggle("🚑 Ambulance Auto-Routing", value=False)
+    st.markdown("---")
+    st.session_state.alerts_enabled = st.toggle(
+        "🔕 Enable Telegram Alerts", value=False
+    )
+    st.caption("*(Keep OFF during testing to prevent phone spam)*")
+    st.markdown("---")
+    rl_enabled = st.toggle("Enable Auto-Learning", value=False)
+    st.session_state.run_siren_sim = st.toggle(
+        "Listen for Sirens", value=False
+    )
+  elif app_mode == "Data Analytics":
+    st.header("📊 Database Export")
+    df_export = pd.DataFrame(st.session_state.full_data_log)
+    if not df_export.empty:
+      csv = df_export.to_csv(index=False).encode("utf-8")
+      st.download_button(
+          label="📥 Download CSV",
+          data=csv,
+          file_name=f"traffic_report_{int(time.time())}.csv",
+          mime="text/csv",
+      )
 
 # ==========================================
-# 🛑 PAGE 2: LIVE AI FEED 🛑
+# 🛑 PAGE 1: LIVE AI FEED 🛑
 # ==========================================
-elif app_mode == "Live AI Feed":
-  st.title("🎥 Live Intersection AI")
+if app_mode == "Live AI Feed":
   camera_url = st.text_input("Video Source", "traffic.mp4")
   col1, col2 = st.columns(2)
 
@@ -618,6 +597,7 @@ elif app_mode == "Live AI Feed":
     while st.session_state.running:
       ret, frame = st.session_state.cap.read()
 
+      # BUFFER FLUSH: Prevents video freezing and lagging behind
       for _ in range(2):
         st.session_state.cap.grab()
 
@@ -719,7 +699,7 @@ elif app_mode == "Live AI Feed":
               if v_class in d_counts[lane]:
                 d_counts[lane][v_class] += 1
 
-        objects = tracker.update(rects)
+        objects = st.session_state.tracker.update(rects)
 
         alpha = 0.20
         for l in LANES:
@@ -758,7 +738,7 @@ elif app_mode == "Live AI Feed":
                   "🚨 EMERGENCY ACTIVE (Missing siren.mp3 or siren.m4a file!)"
               )
 
-        s_sim_on = st.session_state.get("siren_simulation", False)
+        s_sim_on = st.session_state.get("run_siren_sim", False)
         s_active_bool = st.session_state.siren_active
 
         if detected_ambulance_lane:
@@ -800,7 +780,7 @@ elif app_mode == "Live AI Feed":
               sum(st.session_state.lane_counts.values())
           )
           st.session_state.lane_durations = calculate_lane_times(
-              st.session_state.lane_counts, q_learning, current_state
+              st.session_state.lane_counts, rl_enabled, current_state
           )
           st.session_state.cycle_schedule = build_cycle_schedule(
               st.session_state.lane_durations, current_time
