@@ -9,3 +9,4 @@ scikit-learn
 gTTS
 requests
 scipy
+ultralytics
