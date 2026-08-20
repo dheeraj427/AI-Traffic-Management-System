@@ -1133,20 +1133,19 @@ with lane_placeholder.container():
           lane_breakdown_ui(
               st.session_state.detailed_counts, st.session_state.active_lane
           )
-      
-      # ---------------- MEMORY NUKE ----------------
+
+      # ---------------- CLOUD MEMORY & THROTTLE PATCH ----------------
       if frame_counter % 20 == 0:
-          gc.collect()
-      
-     time.sleep(0.15)  # Hard throttle to ~6 FPS to prevent WebSocket OOM crashes
-      
-      # Forcibly delete large arrays from memory
+        gc.collect()
+
+      time.sleep(0.15)
+
       try:
-          del frame
-          del results
-          del df
+        del frame
+        del results
+        del df
       except:
-          pass
+        pass
 
 # ==========================================
 # 🛑 PAGE 2: DATA ANALYTICS 🛑
