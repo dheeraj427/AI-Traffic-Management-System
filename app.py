@@ -639,7 +639,7 @@ if app_mode == "Live AI Feed":
       frame = cv2.resize(frame, (1024, 768))
 
       # ---------------- AI FRAME INFERENCE ----------------
-      if frame_counter % 3 == 0:
+      if frame_counter % 7 == 0:
 
         if st.session_state.siren_trigger_event:
           st.session_state.siren_active = True
@@ -971,7 +971,7 @@ if app_mode == "Live AI Feed":
         gc.collect()
 
       # --- RENDER TICK ---
-      if frame_counter % 5 == 0:
+      if frame_counter % 14 == 0:
         annotated = frame.copy()
 
         int_x1, int_x2 = 350, 674
@@ -1048,8 +1048,9 @@ if app_mode == "Live AI Feed":
         cv2.line(annotated, (0, scan_y), (1024, scan_y), (0, 255, 255), 2)
         cv2.line(annotated, (0, scan_y - 1), (1024, scan_y - 1), (0, 150, 150), 1)
 
+       # Compress JPEG to stop network freezing
         _, buffer = cv2.imencode(
-            ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 85]
+            ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 45]
         )
         video_placeholder.image(buffer.tobytes(), use_container_width=True)
 
