@@ -1047,10 +1047,9 @@ if app_mode == "Live AI Feed":
         scan_y = (frame_counter * 28) % 768
         cv2.line(annotated, (0, scan_y), (1024, scan_y), (0, 255, 255), 2)
         cv2.line(annotated, (0, scan_y - 1), (1024, scan_y - 1), (0, 150, 150), 1)
-
-       # Compress JPEG to stop network freezing
+# Aggressive compression for Streamlit Cloud
         _, buffer = cv2.imencode(
-            ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 45]
+            ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 25]
         )
         video_placeholder.image(buffer.tobytes(), use_container_width=True)
 
@@ -1130,11 +1129,24 @@ if app_mode == "Live AI Feed":
             st.warning("🚶‍♂️ PEDESTRIAN CROSSING ACTIVE.")
 
           st.markdown("</div>", unsafe_allow_html=True)
-
-        with lane_placeholder.container():
+with lane_placeholder.container():
           lane_breakdown_ui(
               st.session_state.detailed_counts, st.session_state.active_lane
           )
+      
+      # ---------------- MEMORY NUKE ----------------
+      if frame_counter % 20 == 0:
+          gc.collect()
+      
+     time.sleep(0.15)  # Hard throttle to ~6 FPS to prevent WebSocket OOM crashes
+      
+      # Forcibly delete large arrays from memory
+      try:
+          del frame
+          del results
+          del df
+      except:
+          pass
 
 # ==========================================
 # 🛑 PAGE 2: DATA ANALYTICS 🛑
