@@ -1130,22 +1130,21 @@ if app_mode == "Live AI Feed":
 
           st.markdown("</div>", unsafe_allow_html=True)
 with lane_placeholder.container():
-          lane_breakdown_ui(
-              st.session_state.detailed_counts, st.session_state.active_lane
-          )
+              lane_breakdown_ui(
+                  st.session_state.detailed_counts, st.session_state.active_lane
+              )
 
-      # ---------------- CLOUD MEMORY & THROTTLE PATCH ----------------
-      if frame_counter % 20 == 0:
-        gc.collect()
+          if frame_counter % 20 == 0:
+            gc.collect()
 
-      time.sleep(0.15)
+          time.sleep(0.15)
 
-      try:
-        del frame
-        del results
-        del df
-      except:
-        pass
+          try:
+            del frame
+            del results
+            del df
+          except:
+            pass
 
 # ==========================================
 # 🛑 PAGE 2: DATA ANALYTICS 🛑
